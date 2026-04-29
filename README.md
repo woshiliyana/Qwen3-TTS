@@ -13,6 +13,8 @@
 
 </p>
 
+> Local long-form production wrapper: see [`docs/local-longform-production.md`](docs/local-longform-production.md). It keeps temp/cache/output files on external storage and emits a required per-segment health report for clipping, loudness, pitch, and pacing outliers.
+
 We release **Qwen3-TTS**, a series of powerful speech generation capabilities developed by Qwen, offering comprehensive support for voice clone, voice design, ultra-high-quality human-like speech generation, and natural language-based voice control. It provides developers and users with the most extensive set of speech generation features available.
 
 

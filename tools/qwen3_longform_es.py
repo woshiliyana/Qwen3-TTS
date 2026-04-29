@@ -32,10 +32,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--language", default="Spanish", choices=SUPPORTED_LANGUAGES)
     parser.add_argument("--device", default="mps")
     parser.add_argument("--dtype", choices=["bfloat16", "float16", "float32"], default="bfloat16")
-    parser.add_argument("--max-chars", type=int, default=1200)
-    parser.add_argument("--min-chars", type=int, default=600)
-    parser.add_argument("--max-new-tokens", type=int, default=4096)
-    parser.add_argument("--max-segment-duration", type=float, default=180.0)
+    parser.add_argument("--max-chars", type=int, default=450)
+    parser.add_argument("--min-chars", type=int, default=250)
+    parser.add_argument("--max-new-tokens", type=int, default=2048)
+    parser.add_argument("--max-segment-duration", type=float, default=120.0)
     parser.add_argument("--min-retry-chars", type=int, default=120)
     parser.add_argument(
         "--smooth-seams",
@@ -739,6 +739,161 @@ def analyze_segment_seams(segment_paths: list[Path], report_path: Path) -> dict[
     return report
 
 
+def median_or_none(values: list[float]) -> float | None:
+    clean = [value for value in values if math.isfinite(value)]
+    if not clean:
+        return None
+    return float(statistics.median(clean))
+
+
+def rounded_or_none(value: float | None, digits: int = 3) -> float | None:
+    if value is None or not math.isfinite(value):
+        return None
+    return round(float(value), digits)
+
+
+def estimate_head_f0_median(wav: np.ndarray, sr: int, seconds: float = 12.0) -> float | None:
+    frames = min(len(wav), int(sr * seconds))
+    if frames < sr:
+        return None
+    head = wav[:frames]
+    try:
+        f0 = librosa.yin(head, fmin=60, fmax=350, sr=sr, frame_length=2048, hop_length=512)
+    except Exception as exc:
+        logging.warning("Failed to estimate segment head f0: %s", exc)
+        return None
+    clean = [float(value) for value in f0 if math.isfinite(float(value))]
+    return median_or_none(clean)
+
+
+def analyze_segment_health(
+    segment_paths: list[Path],
+    manifest_segments: list[dict[str, Any]],
+    report_path: Path,
+) -> dict[str, Any]:
+    if len(segment_paths) != len(manifest_segments):
+        raise RuntimeError(
+            f"Segment health scan needs matching paths and manifest rows: "
+            f"{len(segment_paths)} paths vs {len(manifest_segments)} manifest rows"
+        )
+
+    rows: list[dict[str, Any]] = []
+    sample_rates: set[int] = set()
+    for path, item in zip(segment_paths, manifest_segments):
+        wav, sr = read_wav_mono(path)
+        sample_rates.add(sr)
+        duration = len(wav) / sr if sr else 0.0
+        chars = int(item.get("chars") or len(str(item.get("text") or "")) or 0)
+        rms = float(np.sqrt(np.mean(np.square(wav), dtype=np.float64))) if len(wav) else 0.0
+        abs_wav = np.abs(wav) if len(wav) else np.array([], dtype=np.float32)
+        peak_value = float(np.max(abs_wav)) if len(abs_wav) else 0.0
+        p95 = float(np.percentile(abs_wav, 95)) if len(abs_wav) else 0.0
+        clip_ratio = float(np.mean(abs_wav >= 0.98)) if len(abs_wav) else 0.0
+        f0_median = estimate_head_f0_median(wav, sr)
+        seconds_per_100_chars = duration / max(chars, 1) * 100.0
+        rows.append(
+            {
+                "index": int(item["index"]),
+                "path": str(path),
+                "duration_s": duration,
+                "chars": chars,
+                "seconds_per_100_chars": seconds_per_100_chars,
+                "rms": rms,
+                "peak": peak_value,
+                "p95_abs": p95,
+                "clip_ratio": clip_ratio,
+                "head_f0_median_hz": f0_median,
+                "text_preview": str(item.get("text") or "")[:180],
+            }
+        )
+
+    if len(sample_rates) != 1:
+        raise RuntimeError(f"Mixed segment sample rates during health scan: {sorted(sample_rates)}")
+    sample_rate = next(iter(sample_rates)) if sample_rates else None
+
+    medians = {
+        "duration_s": median_or_none([row["duration_s"] for row in rows]),
+        "seconds_per_100_chars": median_or_none([row["seconds_per_100_chars"] for row in rows]),
+        "rms": median_or_none([row["rms"] for row in rows]),
+        "peak": median_or_none([row["peak"] for row in rows]),
+        "p95_abs": median_or_none([row["p95_abs"] for row in rows]),
+        "head_f0_median_hz": median_or_none(
+            [
+                row["head_f0_median_hz"]
+                for row in rows
+                if row["head_f0_median_hz"] is not None
+            ]
+        ),
+    }
+    thresholds = {
+        "clip_peak_min": 0.98,
+        "clip_ratio_min": 0.0,
+        "rms_high_multiplier": 1.55,
+        "p95_high_multiplier": 1.55,
+        "f0_outlier_hz_delta": 28.0,
+        "pace_slow_multiplier": 1.65,
+        "pace_fast_multiplier": 0.55,
+        "duration_high_multiplier": 1.8,
+    }
+
+    suspect_segments: list[dict[str, Any]] = []
+    hard_clipping_segments: list[int] = []
+    for row in rows:
+        flags: list[str] = []
+        if row["peak"] >= thresholds["clip_peak_min"] or row["clip_ratio"] > thresholds["clip_ratio_min"]:
+            flags.append("clipping")
+            hard_clipping_segments.append(row["index"])
+        if medians["rms"] and row["rms"] > medians["rms"] * thresholds["rms_high_multiplier"]:
+            flags.append("rms_high")
+        if medians["p95_abs"] and row["p95_abs"] > medians["p95_abs"] * thresholds["p95_high_multiplier"]:
+            flags.append("p95_high")
+        if row["head_f0_median_hz"] is not None and medians["head_f0_median_hz"] is not None:
+            if abs(row["head_f0_median_hz"] - medians["head_f0_median_hz"]) > thresholds["f0_outlier_hz_delta"]:
+                flags.append("f0_outlier")
+        if medians["seconds_per_100_chars"]:
+            if row["seconds_per_100_chars"] > medians["seconds_per_100_chars"] * thresholds["pace_slow_multiplier"]:
+                flags.append("pace_slow")
+            if row["seconds_per_100_chars"] < medians["seconds_per_100_chars"] * thresholds["pace_fast_multiplier"]:
+                flags.append("pace_fast")
+        if medians["duration_s"] and row["duration_s"] > medians["duration_s"] * thresholds["duration_high_multiplier"]:
+            flags.append("duration_high")
+
+        row["flags"] = flags
+        if flags:
+            suspect_segments.append(row)
+
+    flag_counts: dict[str, int] = {}
+    for row in suspect_segments:
+        for flag in row["flags"]:
+            flag_counts[flag] = flag_counts.get(flag, 0) + 1
+
+    def public_row(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **row,
+            "duration_s": rounded_or_none(row["duration_s"]),
+            "seconds_per_100_chars": rounded_or_none(row["seconds_per_100_chars"], 2),
+            "rms": rounded_or_none(row["rms"], 4),
+            "peak": rounded_or_none(row["peak"], 4),
+            "p95_abs": rounded_or_none(row["p95_abs"], 4),
+            "clip_ratio": rounded_or_none(row["clip_ratio"], 6),
+            "head_f0_median_hz": rounded_or_none(row["head_f0_median_hz"], 1),
+        }
+
+    report = {
+        "sample_rate": sample_rate,
+        "segments_total": len(rows),
+        "medians": {key: rounded_or_none(value, 4) for key, value in medians.items()},
+        "thresholds": thresholds,
+        "hard_clipping_segments": hard_clipping_segments,
+        "suspect_count": len(suspect_segments),
+        "flag_counts": flag_counts,
+        "suspect_segments": [public_row(row) for row in suspect_segments],
+        "segments": [public_row(row) for row in rows],
+    }
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    return report
+
+
 def apply_edge_fades(wav: np.ndarray, sr: int, fade_ms: float, fade_in: bool, fade_out: bool) -> np.ndarray:
     if fade_ms <= 0:
         return wav
@@ -955,6 +1110,35 @@ def main() -> int:
     if len(completed_paths) != len(manifest["segments"]):
         logging.error("Not all segments completed: %s/%s", len(completed_paths), len(manifest["segments"]))
         return 3
+
+    segment_health_report_path = work_dir / "segment_health_report.json"
+    segment_health_report = analyze_segment_health(
+        completed_paths,
+        manifest["segments"],
+        segment_health_report_path,
+    )
+    logging.info(
+        "Segment health report: suspects=%s hard_clipping=%s path=%s",
+        segment_health_report["suspect_count"],
+        segment_health_report["hard_clipping_segments"],
+        segment_health_report_path,
+    )
+    if segment_health_report["suspect_count"]:
+        logging.warning(
+            "Segment health scan found %s suspect segment(s): %s",
+            segment_health_report["suspect_count"],
+            [
+                {
+                    "index": item["index"],
+                    "flags": item["flags"],
+                    "duration_s": item["duration_s"],
+                    "peak": item["peak"],
+                    "head_f0_median_hz": item["head_f0_median_hz"],
+                }
+                for item in segment_health_report["suspect_segments"]
+            ],
+        )
+    manifest["segment_health_report"] = str(segment_health_report_path)
 
     quality_report_name = "pre_smoothing_quality_report.json" if args.smooth_seams else "quality_report.json"
     quality_report_path = work_dir / quality_report_name

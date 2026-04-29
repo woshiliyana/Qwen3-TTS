@@ -22,3 +22,7 @@ wheels/
 .vscode/
 venv/
 env/
+
+.DS_Store
+._*
+qwen3_tts_work/

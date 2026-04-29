@@ -12,8 +12,23 @@ The wrapper keeps runtime state on external storage:
 - `GRADIO_TEMP_DIR=/Volumes/My Passport/vibe coding/Qwen3-TTS/tmp/gradio`
 - `HF_HOME=/Volumes/My Passport/vibe coding/Qwen3-TTS/hf-cache`
 - `PIP_CACHE_DIR=/Volumes/My Passport/vibe coding/Qwen3-TTS/.pip-cache-prod`
+- Per-script workspaces: `/Volumes/My Passport/vibe coding/Qwen3-TTS/qwen3_tts_work/runs/`
+- Reusable voice caches: `/Volumes/My Passport/vibe coding/Qwen3-TTS/qwen3_tts_work/voices/`
 
-The output directory must also be under `/Volumes`.
+The output directory must also be under `/Volumes`. Final WAVs still go next to the script by default, but generation state no longer lives in the script folder.
+
+Each run workspace is keyed by script stem, language, script hash, reference-voice hash, chunk size, and token budget. Each voice cache is keyed by language and reference-voice hash, so Spanish and Japanese prompt caches stay separate while repeated runs with the same reference audio can reuse:
+
+- `voice_clone_prompt.pt`
+- `voice_clone_prompt.meta.json`
+- `reference_24k_mono.wav`
+- `reference_24k_mono.meta.json`
+
+To preview the resolved paths without generating audio:
+
+```bash
+QWEN3_DRY_RUN=1 tools/run_qwen3_longform.sh Spanish /Volumes/.../voice.wav /Volumes/.../script.md
+```
 
 ## Default Quality Checks
 

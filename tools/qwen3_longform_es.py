@@ -28,6 +28,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--text-path", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--work-dir", required=True)
+    parser.add_argument(
+        "--voice-cache-dir",
+        default=None,
+        help="Directory for reusable voice prompt and normalized reference caches. Defaults to --work-dir.",
+    )
     parser.add_argument("--output-name", required=True)
     parser.add_argument("--language", default="Spanish", choices=SUPPORTED_LANGUAGES)
     parser.add_argument("--device", default="mps")
@@ -963,9 +968,13 @@ def main() -> int:
     text_path = Path(args.text_path).expanduser().resolve(strict=False)
     output_dir = Path(args.output_dir).expanduser().resolve(strict=False)
     work_dir = Path(args.work_dir).expanduser().resolve(strict=False)
+    voice_cache_dir = (
+        Path(args.voice_cache_dir).expanduser().resolve(strict=False) if args.voice_cache_dir else work_dir
+    )
     require_external_volume_path("model_path", model_path)
     require_external_volume_path("output_dir", output_dir)
     require_external_volume_path("work_dir", work_dir)
+    require_external_volume_path("voice_cache_dir", voice_cache_dir)
     if not model_path.is_dir():
         raise RuntimeError(f"Model directory does not exist: {model_path}")
     if not ref_audio.is_file():
@@ -976,12 +985,12 @@ def main() -> int:
     retry_dir = work_dir / "retry_parts"
     final_path = output_dir / args.output_name
     manifest_path = work_dir / "manifest.json"
-    prompt_path = work_dir / "voice_clone_prompt.pt"
     cleaned_text_path = work_dir / "cleaned_text.txt"
     concat_path = work_dir / "concat.txt"
 
     output_dir.mkdir(parents=True, exist_ok=True)
     segments_dir.mkdir(parents=True, exist_ok=True)
+    voice_cache_dir.mkdir(parents=True, exist_ok=True)
     configure_logging(work_dir)
 
     logging.info("TMPDIR=%s", os.environ.get("TMPDIR"))
@@ -990,6 +999,8 @@ def main() -> int:
     logging.info("model=%s", model_path)
     logging.info("ref_audio=%s", ref_audio)
     logging.info("text=%s", text_path)
+    logging.info("work_dir=%s", work_dir)
+    logging.info("voice_cache_dir=%s", voice_cache_dir)
 
     cleaned_text = clean_markdown_text(text_path.read_text(encoding="utf-8"))
     if not cleaned_text:
@@ -1017,7 +1028,7 @@ def main() -> int:
 
     load_runtime_dependencies()
 
-    reference_24k = normalize_reference_audio(ref_audio, work_dir, ref_audio_sha256)
+    reference_24k = normalize_reference_audio(ref_audio, voice_cache_dir, ref_audio_sha256)
     logging.info("reference_24k=%s", reference_24k)
 
     logging.info("Loading Qwen3-TTS model...")
@@ -1029,6 +1040,7 @@ def main() -> int:
         attn_implementation=None,
     )
     logging.info("Model loaded in %.2fs", time.time() - t0)
+    prompt_path = voice_cache_dir / "voice_clone_prompt.pt"
     prompt_items = load_or_create_prompt(tts, reference_24k, prompt_path, ref_audio_sha256)
 
     gen_kwargs: dict[str, Any] = {"max_new_tokens": args.max_new_tokens}

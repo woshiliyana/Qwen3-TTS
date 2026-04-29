@@ -34,36 +34,39 @@ if [[ "$OUTPUT_DIR" != /Volumes/* ]]; then
   echo "Output directory must be on external storage under /Volumes: $OUTPUT_DIR" >&2
   exit 1
 fi
+
+sha256_file() {
+  local digest
+  digest="$(env LC_ALL=C LANG=C shasum -a 256 "$1")"
+  printf '%s\n' "${digest%% *}"
+}
+
 TEXT_BASE="$(basename "$TEXT_PATH")"
 TEXT_STEM="${TEXT_BASE%.*}"
 LANGUAGE_SAFE="$(printf '%s' "$LANGUAGE" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]_-')"
 OUTPUT_NAME="${5:-${TEXT_STEM}_qwen3_${LANGUAGE_SAFE}_smooth.wav}"
-VOICE_HASH="$(shasum -a 256 "$REF_AUDIO")"
-VOICE_HASH="${VOICE_HASH%% *}"
+VOICE_HASH="$(sha256_file "$REF_AUDIO")"
 VOICE_HASH="${VOICE_HASH:0:12}"
+TEXT_HASH="$(sha256_file "$TEXT_PATH")"
+TEXT_HASH="${TEXT_HASH:0:12}"
 MAX_CHARS="${QWEN3_MAX_CHARS:-450}"
 MIN_CHARS="${QWEN3_MIN_CHARS:-250}"
 MAX_NEW_TOKENS="${QWEN3_MAX_NEW_TOKENS:-2048}"
 MAX_SEGMENT_DURATION="${QWEN3_MAX_SEGMENT_DURATION:-120}"
 BOUNDARY_PAUSE_MS="${QWEN3_BOUNDARY_PAUSE_MS:-180}"
 EDGE_FADE_MS="${QWEN3_EDGE_FADE_MS:-8}"
-WORK_DIR="$OUTPUT_DIR/qwen3_tts_work_${TEXT_STEM}_${LANGUAGE_SAFE}_${VOICE_HASH}_${MAX_CHARS}c_${MAX_NEW_TOKENS}tok"
+WORK_ROOT="${QWEN3_WORK_ROOT:-$ROOT/qwen3_tts_work}"
+VOICE_CACHE_DIR="$WORK_ROOT/voices/${LANGUAGE_SAFE}_${VOICE_HASH}"
+WORK_DIR="$WORK_ROOT/runs/${TEXT_STEM}_${LANGUAGE_SAFE}_${TEXT_HASH}_${VOICE_HASH}_${MAX_CHARS}c_${MAX_NEW_TOKENS}tok"
 
-mkdir -p "$ROOT/tmp/gradio" "$ROOT/hf-cache" "$ROOT/.pip-cache-prod" "$OUTPUT_DIR" "$WORK_DIR"
-
-export COPYFILE_DISABLE=1
-export TMPDIR="$ROOT/tmp"
-export GRADIO_TEMP_DIR="$ROOT/tmp/gradio"
-export HF_HOME="$ROOT/hf-cache"
-export PIP_CACHE_DIR="$ROOT/.pip-cache-prod"
-export PYTHONPATH="$ROOT"
-
-"$PYTHON_BIN" "$ROOT/tools/qwen3_longform_es.py" \
+CMD=(
+  "$PYTHON_BIN" "$ROOT/tools/qwen3_longform_es.py"
   --model-path "$MODEL_PATH" \
   --ref-audio "$REF_AUDIO" \
   --text-path "$TEXT_PATH" \
   --output-dir "$OUTPUT_DIR" \
   --work-dir "$WORK_DIR" \
+  --voice-cache-dir "$VOICE_CACHE_DIR" \
   --output-name "$OUTPUT_NAME" \
   --language "$LANGUAGE" \
   --device mps \
@@ -75,3 +78,25 @@ export PYTHONPATH="$ROOT"
   --smooth-seams \
   --edge-fade-ms "$EDGE_FADE_MS" \
   --boundary-pause-ms "$BOUNDARY_PAUSE_MS"
+)
+
+if [[ "${QWEN3_DRY_RUN:-}" == "1" ]]; then
+  printf 'work_dir=%s\n' "$WORK_DIR"
+  printf 'voice_cache_dir=%s\n' "$VOICE_CACHE_DIR"
+  printf 'output_dir=%s\n' "$OUTPUT_DIR"
+  printf 'command='
+  printf '%q ' "${CMD[@]}"
+  printf '\n'
+  exit 0
+fi
+
+mkdir -p "$ROOT/tmp/gradio" "$ROOT/hf-cache" "$ROOT/.pip-cache-prod" "$OUTPUT_DIR" "$WORK_DIR" "$VOICE_CACHE_DIR"
+
+export COPYFILE_DISABLE=1
+export TMPDIR="$ROOT/tmp"
+export GRADIO_TEMP_DIR="$ROOT/tmp/gradio"
+export HF_HOME="$ROOT/hf-cache"
+export PIP_CACHE_DIR="$ROOT/.pip-cache-prod"
+export PYTHONPATH="$ROOT"
+
+"${CMD[@]}"

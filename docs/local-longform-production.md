@@ -44,6 +44,27 @@ tools/qwen3_env_check.sh
 
 The check verifies the external-drive root, production Python, local model directory, `ffmpeg`/`ffprobe`, runtime/cache directories, lightweight Python imports, PyTorch MPS availability, and reusable voice-cache status. It does not load the Qwen3 model or synthesize audio.
 
+### Codex Sandbox and MPS
+
+PyTorch MPS probes can return a false negative inside the Codex filesystem sandbox. In that mode the same venv may report:
+
+```text
+torch.backends.mps.is_built() == True
+torch.backends.mps.is_available() == False
+torch.mps.device_count() == 0
+```
+
+It may also fail to allocate a trivial `mps` tensor even though the Mac has a Metal-capable Apple GPU. Do not treat that sandbox result as proof that the venv, torch wheel, or machine is broken.
+
+For production readiness, verify MPS from a normal terminal or an approved non-sandbox command:
+
+```bash
+.venv-qwen-prod/bin/python -c 'import torch; print(torch.backends.mps.is_built()); print(torch.backends.mps.is_available()); print(torch.mps.device_count()); print(torch.ones(1, device="mps"))'
+bash tools/qwen3_env_check.sh
+```
+
+The expected production result is `is_built=True`, `is_available=True`, `device_count=1`, a printed tensor on `mps:0`, and `tools/qwen3_env_check.sh` ending with `errors=0 warnings=0`. If the sandbox result fails but the non-sandbox result passes, continue with the non-sandbox production path instead of reinstalling PyTorch.
+
 To inspect reusable voice caches:
 
 ```bash

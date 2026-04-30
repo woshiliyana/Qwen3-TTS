@@ -30,6 +30,20 @@ To preview the resolved paths without generating audio:
 QWEN3_DRY_RUN=1 tools/run_qwen3_longform.sh Spanish /Volumes/.../voice.wav /Volumes/.../script.md
 ```
 
+Dry-run previews append a planned row to the local run registry by default. For repeated path previews where no registry evidence is useful, opt out explicitly:
+
+```bash
+QWEN3_DRY_RUN=1 QWEN3_RECORD_DRY_RUN=0 tools/run_qwen3_longform.sh Spanish /Volumes/.../voice.wav /Volumes/.../script.md
+```
+
+Before a real run, check the local production environment:
+
+```bash
+tools/qwen3_env_check.sh
+```
+
+The check verifies the external-drive root, production Python, local model directory, `ffmpeg`/`ffprobe`, runtime/cache directories, lightweight Python imports, PyTorch MPS availability, and reusable voice-cache status. It does not load the Qwen3 model or synthesize audio.
+
 To inspect reusable voice caches:
 
 ```bash
@@ -41,6 +55,42 @@ The status output is tab-separated:
 ```text
 language  voice_hash  prompt  reference  prompt_meta  reference_meta  path
 ```
+
+## Run Registry and Lock
+
+Run history is append-only at:
+
+```text
+qwen3_tts_work/runs/index.jsonl
+```
+
+Each row is one JSON object with schema version `1`. Dry runs write `event=planned`; real runs write `event=started` before invoking the runner and `event=finished` after it exits. Blocked real runs write `event=blocked`, including the active `lock_holder` when another run owns the single-run lock.
+
+The registry records the run id, local timestamps, mode/status, input and reference hashes, output/work/cache paths, chunk/token settings, current git SHA, command preview, duration, exit code, and final evidence paths from `manifest.json` when available.
+
+Real runs use a single-lane atomic lock:
+
+```text
+qwen3_tts_work/run.lock.d/
+```
+
+The wrapper acquires the lock with `mkdir` and writes `run.lock.d/lock.json` only after acquisition. Dry runs never acquire this lock. If a second real run starts while the lock holder PID is alive, the wrapper exits non-zero and records a blocked registry row without changing the active lock.
+
+If the lock holder PID is gone, or if `lock.json` is malformed, the wrapper moves the entire lock directory under:
+
+```text
+qwen3_tts_work/stale-locks/
+```
+
+Then it acquires a fresh lock and continues. Normal exits, interrupts, and termination signals release only the lock whose `run_id` matches the current invocation. If a process is killed with `kill -9`, the next run's stale-lock detection is the recovery path.
+
+Testing can replace the real model runner with a lightweight executable:
+
+```bash
+QWEN3_SKIP_ENV_CHECK=1 QWEN3_RUNNER_BIN=/path/to/fake-runner tools/run_qwen3_longform.sh Spanish /Volumes/.../voice.wav /Volumes/.../script.md
+```
+
+`QWEN3_RUNNER_BIN` is intended for test helpers that accept the same CLI flags and write a minimal `manifest.json`; production runs should leave it unset.
 
 ## Default Quality Checks
 

@@ -15,7 +15,7 @@ The wrapper keeps runtime state on external storage:
 - Per-script workspaces: `/Volumes/My Passport/vibe coding/Qwen3-TTS/qwen3_tts_work/runs/`
 - Reusable voice caches: `/Volumes/My Passport/vibe coding/Qwen3-TTS/qwen3_tts_work/voices/`
 
-The output directory must also be under `/Volumes`. Final WAVs still go next to the script by default, but generation state no longer lives in the script folder.
+The wrapper derives the project root from its own location, so it can be run from any working directory after the repository is moved. The output directory must also be under `/Volumes`. Final WAVs still go next to the script by default, but generation state no longer lives in the script folder.
 
 Each run workspace is keyed by script stem, language, script hash, reference-voice hash, chunk size, and token budget. Each voice cache is keyed by language and reference-voice hash, so Spanish and Japanese prompt caches stay separate while repeated runs with the same reference audio can reuse:
 
@@ -28,6 +28,18 @@ To preview the resolved paths without generating audio:
 
 ```bash
 QWEN3_DRY_RUN=1 tools/run_qwen3_longform.sh Spanish /Volumes/.../voice.wav /Volumes/.../script.md
+```
+
+To inspect reusable voice caches:
+
+```bash
+tools/qwen3_cache_status.sh
+```
+
+The status output is tab-separated:
+
+```text
+language  voice_hash  prompt  reference  prompt_meta  reference_meta  path
 ```
 
 ## Default Quality Checks
@@ -100,8 +112,8 @@ Do not regenerate the whole long-form audio unless multiple unrelated segments f
 Spanish long-form has been stable around:
 
 ```bash
-QWEN3_MAX_CHARS=350-450
-QWEN3_MIN_CHARS=250-350
+QWEN3_MAX_CHARS=420
+QWEN3_MIN_CHARS=220
 QWEN3_MAX_NEW_TOKENS=2048
 ```
 
@@ -112,5 +124,13 @@ QWEN3_MAX_CHARS=450
 QWEN3_MIN_CHARS=250
 QWEN3_MAX_NEW_TOKENS=2048
 ```
+
+The wrapper now applies these language presets by default:
+
+- `Spanish`: `QWEN3_MAX_CHARS=420`, `QWEN3_MIN_CHARS=220`
+- `Japanese`: `QWEN3_MAX_CHARS=450`, `QWEN3_MIN_CHARS=250`
+- `French`: `QWEN3_MAX_CHARS=450`, `QWEN3_MIN_CHARS=250`
+
+Explicit environment variables still override the preset.
 
 Longer chunks can work, but they increase the chance of slow, loud, high-register, or overlong segment failures.

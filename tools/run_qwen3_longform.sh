@@ -19,7 +19,8 @@ REF_AUDIO="$2"
 TEXT_PATH="$3"
 OUTPUT_DIR="${4:-$(dirname "$TEXT_PATH")}"
 
-ROOT="/Volumes/My Passport/vibe coding/Qwen3-TTS"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 MODEL_PATH="$ROOT/models/Qwen3-TTS-12Hz-1.7B-Base-local"
 PYTHON_BIN="$ROOT/.venv-qwen-prod/bin/python"
 if [[ ! -f "$REF_AUDIO" ]]; then
@@ -49,8 +50,22 @@ VOICE_HASH="$(sha256_file "$REF_AUDIO")"
 VOICE_HASH="${VOICE_HASH:0:12}"
 TEXT_HASH="$(sha256_file "$TEXT_PATH")"
 TEXT_HASH="${TEXT_HASH:0:12}"
-MAX_CHARS="${QWEN3_MAX_CHARS:-450}"
-MIN_CHARS="${QWEN3_MIN_CHARS:-250}"
+case "$LANGUAGE" in
+  Spanish)
+    DEFAULT_MAX_CHARS=420
+    DEFAULT_MIN_CHARS=220
+    ;;
+  French | Japanese)
+    DEFAULT_MAX_CHARS=450
+    DEFAULT_MIN_CHARS=250
+    ;;
+  *)
+    echo "Unsupported language: $LANGUAGE" >&2
+    exit 2
+    ;;
+esac
+MAX_CHARS="${QWEN3_MAX_CHARS:-$DEFAULT_MAX_CHARS}"
+MIN_CHARS="${QWEN3_MIN_CHARS:-$DEFAULT_MIN_CHARS}"
 MAX_NEW_TOKENS="${QWEN3_MAX_NEW_TOKENS:-2048}"
 MAX_SEGMENT_DURATION="${QWEN3_MAX_SEGMENT_DURATION:-120}"
 BOUNDARY_PAUSE_MS="${QWEN3_BOUNDARY_PAUSE_MS:-180}"

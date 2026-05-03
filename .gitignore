@@ -26,3 +26,8 @@ env/
 .DS_Store
 ._*
 qwen3_tts_work/
+
+# Local Codex third-party isolated state
+.codex-thirdparty-home/
+.env.codex-thirdparty
+codex-thirdparty.sh

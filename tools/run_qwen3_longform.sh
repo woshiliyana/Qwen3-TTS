@@ -4,7 +4,7 @@ set -euo pipefail
 if [[ $# -lt 3 ]]; then
   cat >&2 <<'USAGE'
 Usage:
-  tools/run_qwen3_longform.sh <Spanish|French|Japanese> <ref_audio.wav> <text.md> [output_dir] [output_name.wav]
+  tools/run_qwen3_longform.sh <English|Spanish|French|Japanese> <ref_audio.wav> <text.md> [output_dir] [output_name.wav]
 
 Example:
   tools/run_qwen3_longform.sh Spanish \
@@ -312,7 +312,7 @@ VOICE_HASH="${REF_AUDIO_SHA256_FULL:0:12}"
 TEXT_SHA256_FULL="$(sha256_file "$TEXT_PATH")"
 TEXT_HASH="${TEXT_SHA256_FULL:0:12}"
 case "$LANGUAGE" in
-  Spanish)
+  English | Spanish)
     DEFAULT_MAX_CHARS=420
     DEFAULT_MIN_CHARS=220
     ;;

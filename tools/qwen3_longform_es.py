@@ -18,7 +18,7 @@ from typing import Any
 
 
 PURE_SEPARATOR_LINE_PATTERN = re.compile(r"^\s*([-*_])\1{2,}\s*$")
-SUPPORTED_LANGUAGES = ("Spanish", "French", "Japanese")
+SUPPORTED_LANGUAGES = ("English", "Spanish", "French", "Japanese")
 
 
 def parse_args() -> argparse.Namespace:

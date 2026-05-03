@@ -387,6 +387,10 @@ else
     --boundary-pause-ms "$BOUNDARY_PAUSE_MS"
   )
 fi
+
+if [[ "${QWEN3_SKIP_QUALITY_GATE:-}" == "1" ]]; then
+  CMD+=(--skip-quality-gate)
+fi
 COMMAND_PREVIEW="$(command_preview "${CMD[@]}")"
 
 export COPYFILE_DISABLE=1
@@ -447,7 +451,10 @@ duration_s=$((run_finished_at - run_started_at))
 
 final_status="completed"
 final_error=""
-if [[ "$runner_status" -ne 0 ]]; then
+if [[ "$runner_status" -eq 4 ]]; then
+  final_status="quality_gate_failed"
+  final_error="quality gate failed — output not produced; review reports in $WORK_DIR or re-run with QWEN3_SKIP_QUALITY_GATE=1"
+elif [[ "$runner_status" -ne 0 ]]; then
   final_status="failed"
   final_error="runner exited with status $runner_status"
 fi

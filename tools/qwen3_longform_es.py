@@ -54,6 +54,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-k", type=int, default=None)
     parser.add_argument("--repetition-penalty", type=float, default=None)
     parser.add_argument("--smoke", action="store_true", help="Generate only the first segment and skip concat.")
+    parser.add_argument("--skip-quality-gate", action="store_true", help="Downgrade quality gate failures to warnings instead of blocking output.")
     parser.add_argument("--force", action="store_true", help="Regenerate existing segment files.")
     return parser.parse_args()
 
@@ -744,6 +745,57 @@ def analyze_segment_seams(segment_paths: list[Path], report_path: Path) -> dict[
     return report
 
 
+def evaluate_quality_gate(
+    segment_health: dict[str, Any],
+    seam_quality: dict[str, Any],
+    gate_path: Path,
+    *,
+    max_risk3_ratio: float = 0.05,
+) -> dict[str, Any]:
+    reasons: list[str] = []
+
+    if segment_health["hard_clipping_segments"]:
+        reasons.append(
+            f"hard clipping in segment(s): {segment_health['hard_clipping_segments']}"
+        )
+
+    risk_counts = seam_quality.get("risk_counts", {})
+    seams_total = seam_quality.get("seams_total", 0)
+
+    high_risk_count = sum(
+        count for score_str, count in risk_counts.items() if int(score_str) >= 4
+    )
+    if high_risk_count:
+        reasons.append(f"{high_risk_count} seam(s) with risk >= 4")
+
+    risk3_count = int(risk_counts.get("3", 0))
+    risk3_ratio = risk3_count / seams_total if seams_total else 0.0
+    if risk3_ratio > max_risk3_ratio:
+        reasons.append(
+            f"risk=3 seams: {risk3_count}/{seams_total} ({risk3_ratio:.1%}) exceeds {max_risk3_ratio:.0%} threshold"
+        )
+
+    passed = len(reasons) == 0
+    warnings: list[str] = []
+    if passed and risk3_count > 0:
+        warnings.append(
+            f"risk=3 seams: {risk3_count}/{seams_total} ({risk3_ratio:.1%}) within threshold"
+        )
+
+    gate = {
+        "passed": passed,
+        "reasons": reasons,
+        "warnings": warnings,
+        "risk_counts": risk_counts,
+        "seams_total": seams_total,
+        "hard_clipping_segments": segment_health["hard_clipping_segments"],
+        "suspect_count": segment_health["suspect_count"],
+        "max_risk3_ratio": max_risk3_ratio,
+    }
+    gate_path.write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
+    return gate
+
+
 def median_or_none(values: list[float]) -> float | None:
     clean = [value for value in values if math.isfinite(value)]
     if not clean:
@@ -1164,6 +1216,23 @@ def main() -> int:
         quality_report_path,
     )
     manifest["quality_report"] = str(quality_report_path)
+
+    gate_path = work_dir / "quality_gate.json"
+    gate = evaluate_quality_gate(segment_health_report, quality_report, gate_path)
+    manifest["quality_gate"] = str(gate_path)
+    persist_manifest(manifest_path, manifest)
+    if gate["passed"]:
+        for warning in gate.get("warnings", []):
+            logging.warning("Quality gate warning: %s", warning)
+        logging.info("Quality gate passed path=%s", gate_path)
+    else:
+        for reason in gate["reasons"]:
+            logging.error("Quality gate FAILED: %s", reason)
+        if args.skip_quality_gate:
+            logging.warning("Quality gate failed but --skip-quality-gate is set; proceeding anyway")
+        else:
+            logging.error("Output not produced. Review reports in %s or re-run with --skip-quality-gate", work_dir)
+            return 4
 
     logging.info("Concatenating %s segments -> %s", len(completed_paths), final_path)
     if args.smooth_seams:
